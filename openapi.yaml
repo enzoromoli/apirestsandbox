@@ -321,10 +321,12 @@ components:
     SandboxStatus:
       type: string
       enum: [pending, ready, failed, terminated]
+      example: pending
     Image:
       type: string
       description: Images autorisées (liste blanche).
       enum: [python:3.12-slim, node:22-slim, alpine:3.20]
+      example: python:3.12-slim
     Limits:
       type: object
       additionalProperties: false
@@ -334,11 +336,13 @@ components:
           minimum: 0.1
           maximum: 2
           default: 1
+          example: 1
         memory_mb:
           type: integer
           minimum: 64
           maximum: 1024
           default: 512
+          example: 256
     Sandbox:
       type: object
       required: [id, image, status, ttl_seconds, limits, created_at, expires_at]
@@ -346,20 +350,24 @@ components:
         id:
           type: string
           pattern: "^sbx-[a-z0-9]{8}$"
+          example: sbx-a1b2c3d4
         image:
           $ref: "#/components/schemas/Image"
         status:
           $ref: "#/components/schemas/SandboxStatus"
         ttl_seconds:
           type: integer
+          example: 600
         limits:
           $ref: "#/components/schemas/Limits"
         created_at:
           type: string
           format: date-time
+          example: "2026-10-28T14:00:00Z"
         expires_at:
           type: string
           format: date-time
+          example: "2026-10-28T14:10:00Z"
     SandboxCreate:
       type: object
       additionalProperties: false
@@ -372,6 +380,7 @@ components:
           minimum: 60
           maximum: 3600
           default: 600
+          example: 600
         limits:
           $ref: "#/components/schemas/Limits"
     SandboxList:
@@ -385,6 +394,7 @@ components:
         next_page_token:
           type: [string, "null"]
           description: Jeton de la page suivante, null s'il n'y en a plus.
+          example: fauxJetondelaPageSuivante
     SandboxPatch:
       type: object
       additionalProperties: false
@@ -394,6 +404,7 @@ components:
           type: integer
           minimum: 60
           maximum: 3600
+          example: 800
     ExecRequest:
       type: object
       additionalProperties: false
@@ -412,6 +423,7 @@ components:
           minimum: 1
           maximum: 60
           default: 30
+          example: 40
     ExecResult:
       type: object
       required: [exit_code, stdout, stderr, duration_ms, timed_out, truncated]
@@ -419,18 +431,24 @@ components:
         exit_code:
           type: [integer, "null"]
           description: Code de sortie, null si la commande a été tuée par le délai.
+          example: 0
         stdout:
           type: string
+          example: "4\n"
         stderr:
           type: string
+          example: ""
         duration_ms:
           type: integer
           minimum: 0
+          example: 42
         timed_out:
           type: boolean
+          example: false
         truncated:
           type: boolean
           description: Vrai si stdout ou stderr dépassait 1 Mio.
+          example: false
     Problem:
       type: object
       description: RFC 9457, Problem Details for HTTP APIs.
@@ -439,14 +457,19 @@ components:
         type:
           type: string
           format: uri-reference
+          example: /problems/not-found
         title:
           type: string
+          example: Sandbox introuvable
         status:
           type: integer
+          example: 404
         detail:
           type: string
+          example: sbx-a1b2c3d4 n'existe pas
         instance:
           type: string
+          example: /v1/sandboxes/sbx-a1b2c3d4
 
   responses:
     NotFound:
