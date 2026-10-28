@@ -88,6 +88,9 @@ def provision(sandbox_id: str) -> None:
     except docker.DockerError:
         sb.update(status="failed")
 
+class SandboxCreate(BaseModel):
+    image: str
+    ttl_seconds: int = 600
 
 # ---------- exemple fourni ----------
 
@@ -100,6 +103,15 @@ def get_sandbox(sandbox_id: str):
 def healthz():
     return {"status": "ok"}
 
+
+@app.post("/v1/sandboxes")
+async def create_sandbox(request: Request):
+    body = await read_json(request, SandboxCreate, ("application/json",))
+    sb = {"id": new_id(), "image": body.image, "status": "pending", "ttl_seconds": body.ttl_seconds,
+          "limits": {"cpus": 1, "memory_mb": 512}, "created_at": now(), "container_id": None}
+    SANDBOXES[sb["id"]] = sb
+    threading.Thread(target=provision, args=(sb["id"],), daemon=True).start()
+    return JSONResponse(public(sb), status_code=202, headers={"Location": f"/v1/sandboxes/{sb['id']}"})
 
 # ---------- à vous ----------
 # Une sandbox en mémoire est un dict :
