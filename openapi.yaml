@@ -11,6 +11,7 @@ info:
     isolés et jetables, dans lesquels un opérateur ou un agent exécute des
     commandes et lit ou écrit des fichiers.
     Toutes les erreurs suivent la RFC 9457 (application/problem+json).
+    400 : JSON illisible. 422 : requête lisible mais valeur invalide.
   contact:
     name: "Binôme : ROMOLI Enzo / LETELLIER Elsa"
 servers:
@@ -315,6 +316,9 @@ components:
         type: string
         minLength: 1
         maxLength: 4096
+        pattern: '^[^/\x00][^\x00]*$'
+        not:
+          pattern: '(^|/)\.\.(/|$)'
       example: src/main.py
 
   schemas:
@@ -457,6 +461,7 @@ components:
         type:
           type: string
           format: uri-reference
+          enum: [/problems/not-found, /problems/file-not-found, /problems/not-ready, /problems/idempotency-conflict, /problems/invalid-json, /problems/validation, /problems/precondition-failed, /problems/unsupported-media-type, /problems/payload-too-large]
           example: /problems/not-found
         title:
           type: string
