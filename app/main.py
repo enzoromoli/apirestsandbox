@@ -113,6 +113,24 @@ async def create_sandbox(request: Request):
     threading.Thread(target=provision, args=(sb["id"],), daemon=True).start()
     return JSONResponse(public(sb), status_code=202, headers={"Location": f"/v1/sandboxes/{sb['id']}"})
 
+
+@app.get("/v1/sandboxes")
+def list_sandboxes(status: str | None = None, page_size: int = 20, page_token: str = "0"):
+    items = [public(sb) for sb in SANDBOXES.values() if status is None or sb["status"] == status]
+    start = int(page_token)
+    page = items[start:start + page_size]
+    next_token = str(start + page_size) if start + page_size < len(items) else None
+    return {"items": page, "next_page_token": next_token}
+
+
+@app.delete("/v1/sandboxes/{sandbox_id}", status_code=204)
+def delete_sandbox(sandbox_id: str):
+    sb = get_or_404(sandbox_id)
+    if sb["container_id"]:
+        docker.remove_container(sb["container_id"])
+    del SANDBOXES[sandbox_id]
+
+    
 # ---------- à vous ----------
 # Une sandbox en mémoire est un dict :
 #   {"id", "image", "status", "ttl_seconds", "limits": {"cpus", "memory_mb"},
