@@ -5,14 +5,15 @@ Fournis : le client Docker (docker.py), les erreurs problem+json (errors.py),
 le stockage en mémoire, la tâche de création en arrière-plan et getSandbox
 pour exemple. À vous d'écrire les autres routes : voir le sujet, partie 2.
 """
+import asyncio
 import json
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import docker
 from .errors import Problem, install
@@ -50,6 +51,19 @@ def get_or_404(sandbox_id: str) -> dict:
     if sb is None:
         raise Problem(404, "not-found", f"{sandbox_id} n'existe pas")
     return sb
+
+
+def get_ready_or_409(sandbox_id: str) -> dict:
+    sb = get_or_404(sandbox_id)
+    if sb["status"] != "ready":
+        raise Problem(409, "not-ready", f"{sandbox_id} n'est pas prête")
+    return sb
+
+
+def check_path(path: str) -> None:
+    """Refuse un chemin vide, absolu, trop long ou qui remonte avec '..' (422)."""
+    if not path or len(path) > 4096 or path.startswith("/") or "\x00" in path or ".." in path.split("/"):
+        raise Problem(422, "validation", f"path : chemin invalide ({path!r})")
 
 
 async def read_json(request: Request, model: type[BaseModel], media_types: tuple[str, ...]) -> BaseModel:
@@ -121,7 +135,46 @@ async def create_sandbox(request: Request):
 # TODO createSandbox   POST   /v1/sandboxes                     -> 202 + Location
 # TODO listSandboxes   GET    /v1/sandboxes                     -> 200, paginé
 # TODO deleteSandbox   DELETE /v1/sandboxes/{sandbox_id}        -> 204
-# TODO execCommand     POST   /v1/sandboxes/{sandbox_id}/exec   -> docker.exec_command(...)
-# TODO readFile        GET    /v1/sandboxes/{sandbox_id}/files  -> docker.read_file(...)
-# TODO writeFile       PUT    /v1/sandboxes/{sandbox_id}/files  -> docker.write_file(...)
 # Bonus updateSandbox  PATCH  /v1/sandboxes/{sandbox_id}        -> ETag et If-Match
+
+MAX_FILE_SIZE = 1024 * 1024  # 1 Mio
+
+
+class ExecRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cmd: list[str] = Field(min_length=1)
+    timeout_seconds: int = Field(30, ge=1, le=60)
+
+
+@app.post("/v1/sandboxes/{sandbox_id}/exec")
+async def exec_command(sandbox_id: str, request: Request):
+    sb = get_ready_or_409(sandbox_id)
+    body = await read_json(request, ExecRequest, ("application/json",))
+    if "" in body.cmd:
+        raise Problem(422, "validation", "cmd : les éléments ne peuvent pas être vides")
+    # exec_command bloque jusqu'à la fin de la commande : on le lance dans un thread
+    return await asyncio.to_thread(docker.exec_command, sb["container_id"], body.cmd, body.timeout_seconds)
+
+
+@app.get("/v1/sandboxes/{sandbox_id}/files")
+def read_file(sandbox_id: str, path: str):
+    sb = get_ready_or_409(sandbox_id)
+    check_path(path)
+    data = docker.read_file(sb["container_id"], path)
+    if data is None:
+        raise Problem(404, "file-not-found", f"{path} n'existe pas")
+    return Response(data, media_type="application/octet-stream")
+
+
+@app.put("/v1/sandboxes/{sandbox_id}/files")
+async def write_file(sandbox_id: str, path: str, request: Request):
+    sb = get_ready_or_409(sandbox_id)
+    check_path(path)
+    ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if ctype != "application/octet-stream":
+        raise Problem(415, "unsupported-media-type", "attendu : application/octet-stream")
+    data = await request.body()
+    if len(data) > MAX_FILE_SIZE:
+        raise Problem(413, "payload-too-large", "1 Mio au plus")
+    created = await asyncio.to_thread(docker.write_file, sb["container_id"], path, data)
+    return Response(status_code=201 if created else 204)
