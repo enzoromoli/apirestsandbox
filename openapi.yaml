@@ -461,7 +461,7 @@ components:
         type:
           type: string
           format: uri-reference
-          enum: [/problems/not-found, /problems/file-not-found, /problems/not-ready, /problems/idempotency-conflict, /problems/invalid-json, /problems/validation, /problems/precondition-failed, /problems/unsupported-media-type, /problems/payload-too-large]
+          enum: [/problems/not-found, /problems/file-not-found, /problems/not-ready, /problems/idempotency-conflict, /problems/invalid-json, /problems/validation, /problems/precondition-failed, /problems/unsupported-media-type, /problems/payload-too-large, /problems/method-not-allowed]
           example: /problems/not-found
         title:
           type: string

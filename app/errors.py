@@ -20,7 +20,7 @@ class Problem(Exception):
 
 
 def problem_response(request: Request, status: int, slug: str, detail: str = "", headers: dict | None = None) -> JSONResponse:
-    body = {"type": f"/errors/{slug}", "title": TITLES.get(status, "Error"), "status": status, "instance": request.url.path}
+    body = {"type": f"/problems/{slug}", "title": TITLES.get(status, "Error"), "status": status, "instance": request.url.path}
     if detail:
         body["detail"] = detail
     return JSONResponse(body, status_code=status, media_type="application/problem+json", headers=headers)

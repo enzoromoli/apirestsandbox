@@ -7,11 +7,13 @@ pour exemple. À vous d'écrire les autres routes : voir le sujet, partie 2.
 """
 import asyncio
 import json
+import re
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -102,9 +104,17 @@ def provision(sandbox_id: str) -> None:
     except docker.DockerError:
         sb.update(status="failed")
 
+class Limits(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    cpus: float = Field(1, ge=0.1, le=2)
+    memory_mb: int = Field(512, ge=64, le=1024)
+
+
 class SandboxCreate(BaseModel):
-    image: str
-    ttl_seconds: int = 600
+    model_config = ConfigDict(extra="forbid", strict=True)
+    image: Literal["python:3.12-slim", "node:22-slim", "alpine:3.20"]
+    ttl_seconds: int = Field(600, ge=60, le=3600)
+    limits: Limits = Field(default_factory=Limits)
 
 # ---------- exemple fourni ----------
 
@@ -120,16 +130,22 @@ def healthz():
 
 @app.post("/v1/sandboxes")
 async def create_sandbox(request: Request):
+    key = request.headers.get("idempotency-key")
+    if key is not None and not 1 <= len(key) <= 255:
+        raise Problem(422, "validation", "Idempotency-Key : 1 à 255 caractères")
     body = await read_json(request, SandboxCreate, ("application/json",))
     sb = {"id": new_id(), "image": body.image, "status": "pending", "ttl_seconds": body.ttl_seconds,
-          "limits": {"cpus": 1, "memory_mb": 512}, "created_at": now(), "container_id": None}
+          "limits": body.limits.model_dump(), "created_at": now(), "container_id": None}
     SANDBOXES[sb["id"]] = sb
     threading.Thread(target=provision, args=(sb["id"],), daemon=True).start()
     return JSONResponse(public(sb), status_code=202, headers={"Location": f"/v1/sandboxes/{sb['id']}"})
 
 
 @app.get("/v1/sandboxes")
-def list_sandboxes(status: str | None = None, page_size: int = 20, page_token: str = "0"):
+def list_sandboxes(status: Literal["pending", "ready", "failed", "terminated"] | None = None,
+                   page_size: int = Query(20, ge=1, le=100), page_token: str = "0"):
+    if not re.fullmatch(r"[0-9]{1,9}", page_token):
+        raise Problem(422, "validation", f"page_token : jeton inconnu ({page_token!r})")
     items = [public(sb) for sb in SANDBOXES.values() if status is None or sb["status"] == status]
     start = int(page_token)
     page = items[start:start + page_size]
