@@ -1,0 +1,149 @@
+# Contrat de sandboxd — squelette du TP3.
+# Une opération est écrite pour exemple (getSandbox). À vous d'écrire les autres :
+# voir le sujet du TP, partie 1. Vérifiez avec `make lint` après chaque ajout.
+openapi: 3.1.0
+info:
+  title: sandboxd
+  version: 1.0.0
+  summary: Des sandboxes éphémères à la demande, pilotées par HTTP.
+  description: |
+    sandboxd crée, pilote et détruit des sandboxes : des conteneurs Docker
+    isolés et jetables, dans lesquels un opérateur ou un agent exécute des
+    commandes et lit ou écrit des fichiers.
+    Toutes les erreurs suivent la RFC 9457 (application/problem+json).
+  contact:
+    name: "Binôme : NOM1 / NOM2"   # TODO
+servers:
+  - url: http://localhost:8000
+    description: Développement local
+tags:
+  - name: sandboxes
+    description: Cycle de vie des sandboxes
+  - name: exec
+    description: Exécution de commandes
+  - name: files
+    description: Lecture et écriture de fichiers
+  - name: health
+    description: Sondes de santé
+
+paths:
+  # TODO : POST /v1/sandboxes (createSandbox), GET /v1/sandboxes (listSandboxes)
+
+  /v1/sandboxes/{sandbox_id}:
+    parameters:
+      - $ref: "#/components/parameters/SandboxId"
+    get:
+      tags: [sandboxes]
+      operationId: getSandbox
+      summary: Consulter une sandbox
+      description: Renvoie l'état courant de la sandbox.
+      responses:
+        "200":
+          description: La sandbox.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    # TODO : PATCH (updateSandbox), DELETE (deleteSandbox)
+
+  # TODO : POST /v1/sandboxes/{sandbox_id}/exec (execCommand)
+  # TODO : GET et PUT /v1/sandboxes/{sandbox_id}/files?path=… (readFile, writeFile)
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Le processus est-il vivant ?
+      description: Ne vérifie aucune dépendance.
+      responses:
+        "200":
+          description: Vivant.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, enum: [ok]}
+
+components:
+  parameters:
+    SandboxId:
+      name: sandbox_id
+      in: path
+      required: true
+      description: Identifiant de la sandbox.
+      schema:
+        type: string
+        pattern: "^sbx-[a-z0-9]{8}$"
+      example: sbx-a1b2c3d4
+
+  schemas:
+    SandboxStatus:
+      type: string
+      enum: [pending, ready, failed, terminated]
+    Image:
+      type: string
+      description: Images autorisées (liste blanche).
+      enum: [python:3.12-slim, node:22-slim, alpine:3.20]
+    Limits:
+      type: object
+      additionalProperties: false
+      properties:
+        cpus:
+          type: number
+          minimum: 0.1
+          maximum: 2
+          default: 1
+        memory_mb:
+          type: integer
+          minimum: 64
+          maximum: 1024
+          default: 512
+    Sandbox:
+      type: object
+      required: [id, image, status, ttl_seconds, limits, created_at, expires_at]
+      properties:
+        id:
+          type: string
+          pattern: "^sbx-[a-z0-9]{8}$"
+        image:
+          $ref: "#/components/schemas/Image"
+        status:
+          $ref: "#/components/schemas/SandboxStatus"
+        ttl_seconds:
+          type: integer
+        limits:
+          $ref: "#/components/schemas/Limits"
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    # TODO : SandboxCreate, SandboxPatch, SandboxList, ExecRequest, ExecResult
+    Problem:
+      type: object
+      description: RFC 9457, Problem Details for HTTP APIs.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+
+  responses:
+    NotFound:
+      description: Sandbox introuvable.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    # TODO : une réponse réutilisable par code d'erreur dont vous avez besoin

@@ -1,0 +1,45 @@
+# Règles de style du cours, en plus des règles OpenAPI standard.
+extends: ["spectral:oas"]
+
+rules:
+  sandboxd-paths-versioned:
+    description: Les routes métier commencent par /v1/ (sauf les sondes de santé).
+    severity: error
+    given: "$.paths"
+    then:
+      field: "@key"
+      function: pattern
+      functionOptions:
+        match: "^/(v1/|healthz$|readyz$)"
+
+  sandboxd-errors-problem-json:
+    description: Toute réponse 4xx ou 5xx est en application/problem+json.
+    severity: error
+    given: "$.paths.*[get,post,put,patch,delete].responses[?(@property.match(/^[45]/))].content"
+    then:
+      field: "application/problem+json"
+      function: truthy
+
+  sandboxd-operation-has-4xx:
+    description: Chaque opération déclare au moins une erreur 4xx plausible.
+    severity: error
+    given: "$.paths[?(@property.match(/^\\/v1\\//))][get,post,put,patch,delete].responses"
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          not:
+            propertyNames:
+              not:
+                pattern: "^4"
+
+  sandboxd-snake-case-properties:
+    description: Les propriétés JSON sont en snake_case.
+    severity: warn
+    given: "$..properties"
+    then:
+      field: "@key"
+      function: pattern
+      functionOptions:
+        match: "^[a-z][a-z0-9_]*$"
