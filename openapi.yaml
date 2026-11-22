@@ -251,7 +251,10 @@ paths:
       tags: [files]
       operationId: writeFile
       summary: Écrire un fichier
-      description: Crée le fichier ou remplace son contenu (1 Mio au plus).
+      description: |
+        Crée le fichier ou remplace son contenu (1 Mio au plus). Les dossiers
+        manquants sont créés ; si un élément du chemin est un fichier, la
+        requête est refusée (422).
       requestBody:
         required: true
         content:
@@ -330,14 +333,17 @@ components:
       name: path
       in: query
       required: true
-      description: Chemin du fichier, relatif à /workspace.
+      description: |
+        Chemin du fichier, relatif à /workspace : ni absolu, ni « .. », et
+        chaque élément entre deux « / » fait 255 octets au plus (limite du
+        système de fichiers).
       schema:
         type: string
         minLength: 1
         maxLength: 4096
         pattern: '^[^/\x00][^\x00]*$'
         not:
-          pattern: '(^|/)\.\.(/|$)'
+          pattern: '(^|/)\.\.(/|$)|[^/]{256}'
       example: src/main.py
 
   schemas:

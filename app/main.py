@@ -12,11 +12,11 @@ import re
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
 from . import docker
 from .errors import Problem, install
@@ -80,6 +80,12 @@ def check_path(path: str) -> None:
     """Refuse un chemin vide, absolu, trop long ou qui remonte avec '..' (422)."""
     if not path or len(path) > 4096 or path.startswith("/") or "\x00" in path or ".." in path.split("/"):
         raise Problem(422, "validation", f"path : chemin invalide ({path!r})")
+    if any(len(part.encode()) > 255 for part in path.split("/")):
+        raise Problem(422, "validation", "path : un élément du chemin dépasse 255 octets")
+
+
+def not_a_directory(exc: docker.DockerError) -> bool:
+    return "not a directory" in exc.message
 
 
 async def read_json(request: Request, model: type[BaseModel], media_types: tuple[str, ...]) -> BaseModel:
@@ -118,22 +124,26 @@ def provision(sandbox_id: str) -> None:
     except docker.DockerError:
         sb.update(status="failed")
 
+# Pour JSON Schema, 600.0 est un entier : le mode strict de Pydantic le refuserait.
+JsonInt = Annotated[int, BeforeValidator(lambda v: int(v) if isinstance(v, float) and v.is_integer() else v)]
+
+
 class Limits(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     cpus: float = Field(1, ge=0.1, le=2)
-    memory_mb: int = Field(512, ge=64, le=1024)
+    memory_mb: JsonInt = Field(512, ge=64, le=1024)
 
 
 class SandboxCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     image: Literal["python:3.12-slim", "node:22-slim", "alpine:3.20"]
-    ttl_seconds: int = Field(600, ge=60, le=3600)
+    ttl_seconds: JsonInt = Field(600, ge=60, le=3600)
     limits: Limits = Field(default_factory=Limits)
 
 
 class SandboxPatch(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    ttl_seconds: int = Field(ge=60, le=3600)
+    ttl_seconds: JsonInt = Field(ge=60, le=3600)
 
 # ---------- exemple fourni ----------
 
@@ -214,20 +224,10 @@ def delete_sandbox(sandbox_id: str):
     if sb["container_id"]:
         docker.remove_container(sb["container_id"])
     with LOCK:
-        del SANDBOXES[sandbox_id]
+        SANDBOXES.pop(sandbox_id, None)
         for k in [k for k, v in IDEMPOTENCY.items() if v["sandbox_id"] == sandbox_id]:
             del IDEMPOTENCY[k]
 
-    
-# ---------- à vous ----------
-# Une sandbox en mémoire est un dict :
-#   {"id", "image", "status", "ttl_seconds", "limits": {"cpus", "memory_mb"},
-#    "created_at", "container_id"}
-#
-# TODO createSandbox   POST   /v1/sandboxes                     -> 202 + Location
-# TODO listSandboxes   GET    /v1/sandboxes                     -> 200, paginé
-# TODO deleteSandbox   DELETE /v1/sandboxes/{sandbox_id}        -> 204
-# Bonus updateSandbox  PATCH  /v1/sandboxes/{sandbox_id}        -> ETag et If-Match
 
 MAX_FILE_SIZE = 1024 * 1024  # 1 Mio
 
@@ -252,7 +252,12 @@ async def exec_command(sandbox_id: str, request: Request):
 def read_file(sandbox_id: str, path: str):
     sb = get_ready_or_409(sandbox_id)
     check_path(path)
-    data = docker.read_file(sb["container_id"], path)
+    try:
+        data = docker.read_file(sb["container_id"], path)
+    except docker.DockerError as exc:
+        if not not_a_directory(exc):
+            raise
+        data = None
     if data is None:
         raise Problem(404, "file-not-found", f"{path} n'existe pas")
     return Response(data, media_type="application/octet-stream")
@@ -268,5 +273,10 @@ async def write_file(sandbox_id: str, path: str, request: Request):
     data = await request.body()
     if len(data) > MAX_FILE_SIZE:
         raise Problem(413, "payload-too-large", "1 Mio au plus")
-    created = await asyncio.to_thread(docker.write_file, sb["container_id"], path, data)
+    try:
+        created = await asyncio.to_thread(docker.write_file, sb["container_id"], path, data)
+    except docker.DockerError as exc:
+        if not not_a_directory(exc):
+            raise
+        raise Problem(422, "validation", f"path : un élément de {path!r} est un fichier, pas un dossier")
     return Response(status_code=201 if created else 204)
