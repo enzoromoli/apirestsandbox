@@ -25,6 +25,7 @@ app = FastAPI(title="sandboxd", openapi_url=None, docs_url=None, redoc_url=None)
 install(app)
 
 SANDBOXES: dict[str, dict] = {}  # id -> sandbox (en mémoire : perdue au redémarrage)
+IDEMPOTENCY: dict[str, dict] = {}  # Idempotency-Key -> corps de la requête et réponse envoyée
 LOCK = threading.Lock()
 
 
@@ -155,11 +156,24 @@ async def create_sandbox(request: Request):
     if key is not None and not 1 <= len(key) <= 255:
         raise Problem(422, "validation", "Idempotency-Key : 1 à 255 caractères")
     body = await read_json(request, SandboxCreate, ("application/json",))
-    sb = {"id": new_id(), "image": body.image, "status": "pending", "ttl_seconds": body.ttl_seconds,
-          "limits": body.limits.model_dump(), "created_at": now(), "container_id": None}
-    SANDBOXES[sb["id"]] = sb
+    request_body = body.model_dump(mode="json")
+    with LOCK:
+        seen = IDEMPOTENCY.get(key) if key is not None else None
+        if seen is not None:
+            if seen["request"] != request_body:
+                raise Problem(409, "idempotency-conflict", "Idempotency-Key déjà utilisée avec un autre corps")
+            return Response(seen["body"], status_code=202, media_type="application/json",
+                            headers={"Location": seen["location"]})
+        sb = {"id": new_id(), "image": body.image, "status": "pending", "ttl_seconds": body.ttl_seconds,
+              "limits": body.limits.model_dump(), "created_at": now(), "container_id": None}
+        SANDBOXES[sb["id"]] = sb
+        location = f"/v1/sandboxes/{sb['id']}"
+        response = JSONResponse(public(sb), status_code=202, headers={"Location": location})
+        if key is not None:
+            IDEMPOTENCY[key] = {"request": request_body, "body": response.body, "location": location,
+                                "sandbox_id": sb["id"]}
     threading.Thread(target=provision, args=(sb["id"],), daemon=True).start()
-    return JSONResponse(public(sb), status_code=202, headers={"Location": f"/v1/sandboxes/{sb['id']}"})
+    return response
 
 
 @app.patch("/v1/sandboxes/{sandbox_id}")
@@ -192,7 +206,10 @@ def delete_sandbox(sandbox_id: str):
     sb = get_or_404(sandbox_id)
     if sb["container_id"]:
         docker.remove_container(sb["container_id"])
-    del SANDBOXES[sandbox_id]
+    with LOCK:
+        del SANDBOXES[sandbox_id]
+        for k in [k for k, v in IDEMPOTENCY.items() if v["sandbox_id"] == sandbox_id]:
+            del IDEMPOTENCY[k]
 
     
 # ---------- à vous ----------

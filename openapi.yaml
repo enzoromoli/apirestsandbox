@@ -35,8 +35,9 @@ paths:
       summary: Créer une sandbox
       description: |
         Enregistre la sandbox en état pending et lance sa création en tâche
-        de fond. Rejouer la requête avec le même Idempotency-Key renvoie la
-        même sandbox.
+        de fond. Rejouer la requête avec le même Idempotency-Key et le même
+        corps renvoie la réponse d'origine sans créer de sandbox ; avec un
+        autre corps, 409. La clé est libérée quand sa sandbox est détruite.
       parameters:
         - name: Idempotency-Key
           in: header
