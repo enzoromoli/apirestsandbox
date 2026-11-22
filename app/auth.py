@@ -36,7 +36,8 @@ def current_actor(request: Request) -> dict:
     if scheme.lower() != "bearer" or not credentials:
         raise unauthorized("en-tête Authorization: Bearer manquant")
     if hmac.compare_digest(credentials.encode(), API_KEY.encode()):
-        return {"role": "operator"}
+        request.state.actor = {"role": "operator"}
+        return request.state.actor
     try:
         claims = jwt.decode(credentials, JWT_SECRET, algorithms=["HS256"],
                             options={"require": ["sub", "role", "exp"]})
@@ -46,7 +47,8 @@ def current_actor(request: Request) -> dict:
         raise unauthorized("clé ou jeton invalide")
     if claims["role"] != "agent":
         raise unauthorized("clé ou jeton invalide")
-    return {"role": "agent", "sandbox_id": claims["sub"]}
+    request.state.actor = {"role": "agent", "sandbox_id": claims["sub"]}
+    return request.state.actor
 
 
 def operator_only(actor: Annotated[dict, Depends(current_actor)]) -> dict:

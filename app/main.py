@@ -18,12 +18,13 @@ from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
-from . import docker
+from . import audit, docker
 from .auth import Operator, OperatorOrAgent, issue_token
 from .errors import Problem, install
 
 app = FastAPI(title="sandboxd", openapi_url=None, docs_url=None, redoc_url=None)
 install(app)
+audit.install(app)
 
 SANDBOXES: dict[str, dict] = {}  # id -> sandbox (en mémoire : perdue au redémarrage)
 IDEMPOTENCY: dict[str, dict] = {}  # Idempotency-Key -> corps de la requête et réponse envoyée
@@ -250,6 +251,7 @@ class ExecRequest(BaseModel):
 async def exec_command(sandbox_id: str, request: Request, actor: OperatorOrAgent):
     sb = get_ready_or_409(sandbox_id)
     body = await read_json(request, ExecRequest, ("application/json",))
+    request.state.cmd = body.cmd
     if "" in body.cmd:
         raise Problem(422, "validation", "cmd : les éléments ne peuvent pas être vides")
     # exec_command bloque jusqu'à la fin de la commande : on le lance dans un thread
