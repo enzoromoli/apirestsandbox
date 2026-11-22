@@ -4,3 +4,4 @@ docs.html
 .hypothesis/
 .schemathesis/
 audit.log
+.pytest_cache/
