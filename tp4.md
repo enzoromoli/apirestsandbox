@@ -82,15 +82,24 @@ Les vérifications du sujet, dans la même session :
 
 Chaque réponse perdue a été rattrapée par un rejeu avec la même clé : autant de sandboxes en plus que de succès.
 
-## 5. Contre notre sandboxd (`SANDBOXD_URL=http://localhost:8000`, sans Docker)
+## 5. Contre notre sandboxd (`SANDBOXD_URL=http://localhost:8000`)
+
+Avec Docker (images `alpine:3.20` et `python:3.12-slim` déjà téléchargées) :
 
 | Commande | Résultat |
 | --- | --- |
-| `create` × 3, `ls`, `ls --json` | OK : 3 identifiants, puis la liste complète |
+| `create --wait` (alpine, python) | identifiant affiché une fois `ready`, en 3,2 s et 3,5 s, code 0 |
+| `exec … -- echo bonjour` | `bonjour`, code 0 |
+| `exec … -- sh -c 'echo SUR_STDOUT; echo SUR_STDERR >&2'` | `SUR_STDOUT` sur stdout seulement, `SUR_STDERR` sur stderr seulement |
+| `exec … -- sh -c 'exit 3'` | code de sortie 3 |
+| `exec … -- python -c 'print(2 + 2)'` | `4`, code 0 |
+| `exec --timeout 2 … -- sleep 5` | `sbx: commande tuée après 2 s`, code 124, au bout de 4 s |
 | `create --image ubuntu:latest` | `422 image : Input should be …`, code 1, sans nouvel essai |
-| `exec` sur une sandbox `pending` | `409 … n'est pas prête`, code 1 |
-| `rm` deux fois de suite | code 0, puis code 0 |
-| `create --wait` | La sandbox reste `pending` : sbx abandonne au bout de 120 s, code 1, sans rester bloqué |
+| `ls`, `ls --status ready`, `ls --json` | 8 sandboxes, 0 doublon ; 5 `ready` ; 8 en JSON |
+| `rm` deux fois sur chacune des 8 | code 0 puis code 0 ; ensuite `ls` est vide et aucun conteneur n'est encore en marche |
+
+Sans Docker, `exec` sur une sandbox `pending` donne `409 … n'est pas prête` (code 1). `create --wait` abandonne au bout de
+120 s (code 1), sans rester bloqué, parce que la sandbox ne quitte jamais `pending`.
 
 Deux points côté serveur, à voir avec Enzo :
 
@@ -98,8 +107,6 @@ Deux points côté serveur, à voir avec Enzo :
   `pending` au lieu de passer en `failed`. Correction : `except (docker.DockerError, httpx.HTTPError)`.
 - L'`Idempotency-Key` n'est pas encore gérée par le serveur (tâche E2). D'ici là, une réponse perdue peut créer un doublon
   contre notre sandboxd. Le client envoie déjà la clé.
-
-Le test complet avec Docker est prévu à l'intégration commune.
 
 ## 6. Limites connues
 
