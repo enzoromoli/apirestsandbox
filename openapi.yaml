@@ -291,6 +291,24 @@ paths:
                 properties:
                   status: {type: string, enum: [ok]}
 
+  /readyz:
+    get:
+      tags: [health]
+      operationId: getReadiness
+      summary: sandboxd peut-il servir des requêtes ?
+      description: Vérifie que le démon Docker répond (GET /_ping).
+      responses:
+        "200":
+          description: Prêt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, enum: [ready]}
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
 components:
   headers:
     ETag:
@@ -462,7 +480,7 @@ components:
         type:
           type: string
           format: uri-reference
-          enum: [/problems/not-found, /problems/file-not-found, /problems/not-ready, /problems/idempotency-conflict, /problems/invalid-json, /problems/validation, /problems/precondition-failed, /problems/unsupported-media-type, /problems/payload-too-large, /problems/method-not-allowed]
+          enum: [/problems/not-found, /problems/file-not-found, /problems/not-ready, /problems/idempotency-conflict, /problems/invalid-json, /problems/validation, /problems/precondition-failed, /problems/unsupported-media-type, /problems/payload-too-large, /problems/method-not-allowed, /problems/docker-unavailable]
           example: /problems/not-found
         title:
           type: string
@@ -515,6 +533,11 @@ components:
           schema: {$ref: "#/components/schemas/Problem"}
     PayloadTooLarge:
       description: Corps trop volumineux.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    ServiceUnavailable:
+      description: Le démon Docker ne répond pas.
       content:
         application/problem+json:
           schema: {$ref: "#/components/schemas/Problem"}

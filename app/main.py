@@ -150,6 +150,13 @@ def healthz():
     return {"status": "ok"}
 
 
+@app.get("/readyz")
+def readyz():
+    if not docker.ping():
+        raise Problem(503, "docker-unavailable", "le démon Docker ne répond pas")
+    return {"status": "ready"}
+
+
 @app.post("/v1/sandboxes")
 async def create_sandbox(request: Request):
     key = request.headers.get("idempotency-key")
