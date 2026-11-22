@@ -12,6 +12,11 @@ info:
     commandes et lit ou écrit des fichiers.
     Toutes les erreurs suivent la RFC 9457 (application/problem+json).
     400 : JSON illisible. 422 : requête lisible mais valeur invalide.
+
+    Authentification : `Authorization: Bearer <clé>`. L'opérateur utilise la
+    clé d'API du serveur et peut tout faire. Un agent utilise un jeton émis par
+    createToken : il ne peut que consulter sa sandbox, y exécuter des commandes
+    et y lire ou écrire des fichiers. Une autre sandbox lui répond 404.
   contact:
     name: "Binôme : ROMOLI Enzo / LETELLIER Elsa"
 servers:
@@ -24,6 +29,8 @@ tags:
     description: Exécution de commandes
   - name: files
     description: Lecture et écriture de fichiers
+  - name: auth
+    description: Jetons des agents
   - name: health
     description: Sondes de santé
 
@@ -33,6 +40,8 @@ paths:
       tags: [sandboxes]
       operationId: createSandbox
       summary: Créer une sandbox
+      security:
+        - operatorKey: []
       description: |
         Enregistre la sandbox en état pending et lance sa création en tâche
         de fond. Rejouer la requête avec le même Idempotency-Key et le même
@@ -68,6 +77,10 @@ paths:
                 $ref: "#/components/schemas/Sandbox"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/Conflict"
         "415":
@@ -78,6 +91,8 @@ paths:
       tags: [sandboxes]
       operationId: listSandboxes
       summary: Lister les sandboxes
+      security:
+        - operatorKey: []
       description: Renvoie les sandboxes page par page, éventuellement filtrées par état.
       parameters:
         - name: status
@@ -110,6 +125,10 @@ paths:
                 $ref: "#/components/schemas/SandboxList"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
 
@@ -120,6 +139,9 @@ paths:
       tags: [sandboxes]
       operationId: getSandbox
       summary: Consulter une sandbox
+      security:
+        - operatorKey: []
+        - agentToken: []
       description: Renvoie l'état courant de la sandbox.
       responses:
         "200":
@@ -131,12 +153,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Sandbox"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
     patch:
       tags: [sandboxes]
       operationId: updateSandbox
       summary: Modifier une sandbox
+      security:
+        - operatorKey: []
       description: |
         Applique un JSON Merge Patch (RFC 7396) : seul ttl_seconds est
         modifiable, ce qui prolonge ou raccourcit la durée de vie à partir de
@@ -167,6 +193,10 @@ paths:
                 $ref: "#/components/schemas/Sandbox"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "412":
@@ -179,6 +209,8 @@ paths:
       tags: [sandboxes]
       operationId: deleteSandbox
       summary: Détruire une sandbox
+      security:
+        - operatorKey: []
       description: |
         Supprime le conteneur et oublie la sandbox : une lecture ultérieure
         renvoie 404. Une sandbox encore en pending est détruite dès que sa
@@ -186,6 +218,36 @@ paths:
       responses:
         "204":
           description: Sandbox détruite.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/sandboxes/{sandbox_id}/tokens:
+    parameters:
+      - $ref: "#/components/parameters/SandboxId"
+    post:
+      tags: [auth]
+      operationId: createToken
+      summary: Émettre un jeton d'agent
+      description: |
+        Émet un JWT valable 15 minutes, limité à cette sandbox. L'agent
+        l'envoie en `Authorization: Bearer <jeton>`.
+      security:
+        - operatorKey: []
+      responses:
+        "201":
+          description: Jeton émis.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -196,6 +258,9 @@ paths:
       tags: [exec]
       operationId: execCommand
       summary: Exécuter une commande
+      security:
+        - operatorKey: []
+        - agentToken: []
       description: |
         Lance la commande dans /workspace et attend sa fin, sans shell :
         cmd est passé tel quel. Au-delà de timeout_seconds, la commande est
@@ -215,6 +280,8 @@ paths:
                 $ref: "#/components/schemas/ExecResult"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -232,6 +299,9 @@ paths:
       tags: [files]
       operationId: readFile
       summary: Lire un fichier
+      security:
+        - operatorKey: []
+        - agentToken: []
       description: Renvoie le contenu brut du fichier.
       responses:
         "200":
@@ -241,6 +311,8 @@ paths:
               schema:
                 type: string
                 format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -251,6 +323,9 @@ paths:
       tags: [files]
       operationId: writeFile
       summary: Écrire un fichier
+      security:
+        - operatorKey: []
+        - agentToken: []
       description: |
         Crée le fichier ou remplace son contenu (1 Mio au plus). Les dossiers
         manquants sont créés ; si un élément du chemin est un fichier, la
@@ -267,6 +342,8 @@ paths:
           description: Fichier créé.
         "204":
           description: Fichier remplacé.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -284,6 +361,7 @@ paths:
       operationId: getHealth
       summary: Le processus est-il vivant ?
       description: Ne vérifie aucune dépendance.
+      security: []
       responses:
         "200":
           description: Vivant.
@@ -300,6 +378,7 @@ paths:
       operationId: getReadiness
       summary: sandboxd peut-il servir des requêtes ?
       description: Vérifie que le démon Docker répond (GET /_ping).
+      security: []
       responses:
         "200":
           description: Prêt.
@@ -313,6 +392,17 @@ paths:
           $ref: "#/components/responses/ServiceUnavailable"
 
 components:
+  securitySchemes:
+    operatorKey:
+      type: http
+      scheme: bearer
+      description: Clé d'API de l'opérateur (variable SANDBOXD_API_KEY du serveur).
+    agentToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Jeton d'agent émis par createToken, valable 15 minutes pour une seule sandbox.
+
   headers:
     ETag:
       description: Version courante de la sandbox, à renvoyer dans If-Match.
@@ -478,6 +568,18 @@ components:
           type: boolean
           description: Vrai si stdout ou stderr dépassait 1 Mio.
           example: false
+    Token:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+          description: "JWT HS256 à envoyer en `Authorization: Bearer <jeton>`."
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzYngtYTFiMmMzZDQifQ.signature
+        expires_at:
+          type: string
+          format: date-time
+          example: "2026-10-28T14:15:00Z"
     Problem:
       type: object
       description: RFC 9457, Problem Details for HTTP APIs.
@@ -486,7 +588,7 @@ components:
         type:
           type: string
           format: uri-reference
-          enum: [/problems/not-found, /problems/file-not-found, /problems/not-ready, /problems/idempotency-conflict, /problems/invalid-json, /problems/validation, /problems/precondition-failed, /problems/unsupported-media-type, /problems/payload-too-large, /problems/method-not-allowed, /problems/docker-unavailable]
+          enum: [/problems/not-found, /problems/file-not-found, /problems/not-ready, /problems/idempotency-conflict, /problems/invalid-json, /problems/validation, /problems/precondition-failed, /problems/unsupported-media-type, /problems/payload-too-large, /problems/method-not-allowed, /problems/docker-unavailable, /problems/unauthorized, /problems/forbidden]
           example: /problems/not-found
         title:
           type: string
@@ -502,6 +604,21 @@ components:
           example: /v1/sandboxes/sbx-a1b2c3d4
 
   responses:
+    Unauthorized:
+      description: En-tête Authorization absent, clé inconnue, jeton invalide ou expiré.
+      headers:
+        WWW-Authenticate:
+          description: Toujours « Bearer ».
+          schema:
+            type: string
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    Forbidden:
+      description: Réservé à l'opérateur.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
     NotFound:
       description: Sandbox introuvable.
       content:

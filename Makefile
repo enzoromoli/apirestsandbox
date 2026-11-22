@@ -3,6 +3,7 @@ SPEC          ?= openapi.yaml
 PORT          ?= 8000
 DOCKER_SOCKET ?= /var/run/docker.sock
 VENV          ?= .venv
+export SANDBOXD_API_KEY ?= dev-key
 
 .PHONY: help lint mock docs install run test-contract clean
 
@@ -35,6 +36,7 @@ run:
 # légitimes liés à l'état (jeton de page inconnu, If-Match périmé, clé réutilisée).
 test-contract:
 	$(VENV)/bin/schemathesis run $(SPEC) --url http://localhost:$(PORT) -n 20 -w 1 \
+		-H "Authorization: Bearer $(SANDBOXD_API_KEY)" \
 		--exclude-checks positive_data_acceptance
 
 clean:

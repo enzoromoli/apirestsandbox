@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
 from . import docker
+from .auth import Operator, OperatorOrAgent, issue_token
 from .errors import Problem, install
 
 app = FastAPI(title="sandboxd", openapi_url=None, docs_url=None, redoc_url=None)
@@ -148,7 +149,7 @@ class SandboxPatch(BaseModel):
 # ---------- exemple fourni ----------
 
 @app.get("/v1/sandboxes/{sandbox_id}")
-def get_sandbox(sandbox_id: str):
+def get_sandbox(sandbox_id: str, actor: OperatorOrAgent):
     sb = get_or_404(sandbox_id)
     with LOCK:
         rep = public(sb)
@@ -168,7 +169,7 @@ def readyz():
 
 
 @app.post("/v1/sandboxes")
-async def create_sandbox(request: Request):
+async def create_sandbox(request: Request, actor: Operator):
     key = request.headers.get("idempotency-key")
     if key is not None and not 1 <= len(key) <= 255:
         raise Problem(422, "validation", "Idempotency-Key : 1 à 255 caractères")
@@ -194,7 +195,7 @@ async def create_sandbox(request: Request):
 
 
 @app.patch("/v1/sandboxes/{sandbox_id}")
-async def update_sandbox(sandbox_id: str, request: Request):
+async def update_sandbox(sandbox_id: str, request: Request, actor: Operator):
     get_or_404(sandbox_id)
     patch = await read_json(request, SandboxPatch, ("application/merge-patch+json",))
     with LOCK:
@@ -207,7 +208,7 @@ async def update_sandbox(sandbox_id: str, request: Request):
 
 
 @app.get("/v1/sandboxes")
-def list_sandboxes(status: Literal["pending", "ready", "failed", "terminated"] | None = None,
+def list_sandboxes(actor: Operator, status: Literal["pending", "ready", "failed", "terminated"] | None = None,
                    page_size: int = Query(20, ge=1, le=100), page_token: str = "0"):
     if not re.fullmatch(r"[0-9]{1,9}", page_token):
         raise Problem(422, "validation", f"page_token : jeton inconnu ({page_token!r})")
@@ -219,7 +220,7 @@ def list_sandboxes(status: Literal["pending", "ready", "failed", "terminated"] |
 
 
 @app.delete("/v1/sandboxes/{sandbox_id}", status_code=204)
-def delete_sandbox(sandbox_id: str):
+def delete_sandbox(sandbox_id: str, actor: Operator):
     sb = get_or_404(sandbox_id)
     if sb["container_id"]:
         docker.remove_container(sb["container_id"])
@@ -227,6 +228,13 @@ def delete_sandbox(sandbox_id: str):
         SANDBOXES.pop(sandbox_id, None)
         for k in [k for k, v in IDEMPOTENCY.items() if v["sandbox_id"] == sandbox_id]:
             del IDEMPOTENCY[k]
+
+
+@app.post("/v1/sandboxes/{sandbox_id}/tokens", status_code=201)
+def create_token(sandbox_id: str, actor: Operator):
+    get_or_404(sandbox_id)
+    token, expires_at = issue_token(sandbox_id)
+    return {"token": token, "expires_at": iso(expires_at)}
 
 
 MAX_FILE_SIZE = 1024 * 1024  # 1 Mio
@@ -239,7 +247,7 @@ class ExecRequest(BaseModel):
 
 
 @app.post("/v1/sandboxes/{sandbox_id}/exec")
-async def exec_command(sandbox_id: str, request: Request):
+async def exec_command(sandbox_id: str, request: Request, actor: OperatorOrAgent):
     sb = get_ready_or_409(sandbox_id)
     body = await read_json(request, ExecRequest, ("application/json",))
     if "" in body.cmd:
@@ -249,7 +257,7 @@ async def exec_command(sandbox_id: str, request: Request):
 
 
 @app.get("/v1/sandboxes/{sandbox_id}/files")
-def read_file(sandbox_id: str, path: str):
+def read_file(sandbox_id: str, path: str, actor: OperatorOrAgent):
     sb = get_ready_or_409(sandbox_id)
     check_path(path)
     try:
@@ -264,7 +272,7 @@ def read_file(sandbox_id: str, path: str):
 
 
 @app.put("/v1/sandboxes/{sandbox_id}/files")
-async def write_file(sandbox_id: str, path: str, request: Request):
+async def write_file(sandbox_id: str, path: str, request: Request, actor: OperatorOrAgent):
     sb = get_ready_or_409(sandbox_id)
     check_path(path)
     ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
