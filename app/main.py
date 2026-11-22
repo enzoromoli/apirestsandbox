@@ -6,6 +6,7 @@ le stockage en mémoire, la tâche de création en arrière-plan et getSandbox
 pour exemple. À vous d'écrire les autres routes : voir le sujet, partie 2.
 """
 import asyncio
+import hashlib
 import json
 import re
 import secrets
@@ -46,6 +47,18 @@ def public(sb: dict) -> dict:
         "limits": sb["limits"], "created_at": iso(sb["created_at"]),
         "expires_at": iso(sb["created_at"] + timedelta(seconds=sb["ttl_seconds"])),
     }
+
+
+def etag(rep: dict) -> str:
+    """Empreinte de la représentation : elle change dès que la sandbox change."""
+    data = json.dumps(rep, sort_keys=True).encode()
+    return '"' + hashlib.sha256(data).hexdigest()[:16] + '"'
+
+
+def if_match_ok(header: str | None, current: str) -> bool:
+    if header is None or header.strip() == "*":
+        return True
+    return current in [tag.strip() for tag in header.split(",")]
 
 
 def get_or_404(sandbox_id: str) -> dict:
@@ -116,11 +129,19 @@ class SandboxCreate(BaseModel):
     ttl_seconds: int = Field(600, ge=60, le=3600)
     limits: Limits = Field(default_factory=Limits)
 
+
+class SandboxPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    ttl_seconds: int = Field(ge=60, le=3600)
+
 # ---------- exemple fourni ----------
 
 @app.get("/v1/sandboxes/{sandbox_id}")
 def get_sandbox(sandbox_id: str):
-    return public(get_or_404(sandbox_id))
+    sb = get_or_404(sandbox_id)
+    with LOCK:
+        rep = public(sb)
+    return JSONResponse(rep, headers={"ETag": etag(rep)})
 
 
 @app.get("/healthz")
@@ -139,6 +160,19 @@ async def create_sandbox(request: Request):
     SANDBOXES[sb["id"]] = sb
     threading.Thread(target=provision, args=(sb["id"],), daemon=True).start()
     return JSONResponse(public(sb), status_code=202, headers={"Location": f"/v1/sandboxes/{sb['id']}"})
+
+
+@app.patch("/v1/sandboxes/{sandbox_id}")
+async def update_sandbox(sandbox_id: str, request: Request):
+    get_or_404(sandbox_id)
+    patch = await read_json(request, SandboxPatch, ("application/merge-patch+json",))
+    with LOCK:
+        sb = get_or_404(sandbox_id)
+        if not if_match_ok(request.headers.get("if-match"), etag(public(sb))):
+            raise Problem(412, "precondition-failed", "If-Match ne correspond plus à la version courante")
+        sb["ttl_seconds"] = patch.ttl_seconds
+        rep = public(sb)
+    return JSONResponse(rep, headers={"ETag": etag(rep)})
 
 
 @app.get("/v1/sandboxes")
