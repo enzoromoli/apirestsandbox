@@ -21,7 +21,7 @@ from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
-from . import audit, docker
+from . import audit, docker, webhooks
 from .auth import Operator, OperatorOrAgent, issue_token
 from .errors import Problem, install
 
@@ -136,8 +136,10 @@ def provision(sandbox_id: str) -> None:
                 docker.remove_container(cid)
                 return
             sb.update(container_id=cid, status="ready")
+        webhooks.emit("sandbox.ready", public(sb))
     except docker.DockerError:
         sb.update(status="failed")
+        webhooks.emit("sandbox.failed", public(sb))
 
 
 def expire_loop() -> None:
@@ -151,6 +153,7 @@ def expire_loop() -> None:
                 except docker.DockerError:
                     continue
                 sb.update(status="terminated", container_id=None)
+                webhooks.emit("sandbox.expired", public(sb))
 
 # Pour JSON Schema, 600.0 est un entier : le mode strict de Pydantic le refuserait.
 JsonInt = Annotated[int, BeforeValidator(lambda v: int(v) if isinstance(v, float) and v.is_integer() else v)]
