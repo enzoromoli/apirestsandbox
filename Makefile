@@ -5,7 +5,7 @@ DOCKER_SOCKET ?= /var/run/docker.sock
 VENV          ?= .venv
 export SANDBOXD_API_KEY ?= dev-key
 
-.PHONY: help lint mock docs install run test-contract test-auth flaky clean
+.PHONY: help lint mock docs install run test-contract test-auth test-webhooks flaky clean
 
 help:
 	@echo "make lint           vérifier le contrat (Spectral)"
@@ -15,6 +15,7 @@ help:
 	@echo "make run            lancer sandboxd (port $(PORT))"
 	@echo "make test-contract  rejouer le contrat contre sandboxd (Schemathesis)"
 	@echo "make test-auth      tester l'authentification et les autorisations (pytest, sans Docker)"
+	@echo "make test-webhooks  tester le récepteur de webhooks (pytest)"
 	@echo "make flaky          lancer l'API d'entraînement capricieuse (TP4, port 8001)"
 	@echo "make clean          supprimer les conteneurs créés par sandboxd"
 
@@ -43,6 +44,9 @@ test-contract:
 
 test-auth:
 	$(VENV)/bin/python -m pytest -q tests/test_auth.py
+
+test-webhooks:
+	$(VENV)/bin/python -m pytest -q tests/test_webhooks.py
 
 flaky:
 	$(VENV)/bin/uvicorn training.flaky_api:app --port 8001
