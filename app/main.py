@@ -6,24 +6,28 @@ le stockage en mémoire, la tâche de création en arrière-plan et getSandbox
 pour exemple. À vous d'écrire les autres routes : voir le sujet, partie 2.
 """
 import asyncio
+import hashlib
 import json
 import re
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
-from . import docker
+from . import audit, docker
+from .auth import Operator, OperatorOrAgent, issue_token
 from .errors import Problem, install
 
 app = FastAPI(title="sandboxd", openapi_url=None, docs_url=None, redoc_url=None)
 install(app)
+audit.install(app)
 
 SANDBOXES: dict[str, dict] = {}  # id -> sandbox (en mémoire : perdue au redémarrage)
+IDEMPOTENCY: dict[str, dict] = {}  # Idempotency-Key -> corps de la requête et réponse envoyée
 LOCK = threading.Lock()
 
 
@@ -48,6 +52,18 @@ def public(sb: dict) -> dict:
     }
 
 
+def etag(rep: dict) -> str:
+    """Empreinte de la représentation : elle change dès que la sandbox change."""
+    data = json.dumps(rep, sort_keys=True).encode()
+    return '"' + hashlib.sha256(data).hexdigest()[:16] + '"'
+
+
+def if_match_ok(header: str | None, current: str) -> bool:
+    if header is None or header.strip() == "*":
+        return True
+    return current in [tag.strip() for tag in header.split(",")]
+
+
 def get_or_404(sandbox_id: str) -> dict:
     sb = SANDBOXES.get(sandbox_id)
     if sb is None:
@@ -66,6 +82,12 @@ def check_path(path: str) -> None:
     """Refuse un chemin vide, absolu, trop long ou qui remonte avec '..' (422)."""
     if not path or len(path) > 4096 or path.startswith("/") or "\x00" in path or ".." in path.split("/"):
         raise Problem(422, "validation", f"path : chemin invalide ({path!r})")
+    if any(len(part.encode()) > 255 for part in path.split("/")):
+        raise Problem(422, "validation", "path : un élément du chemin dépasse 255 octets")
+
+
+def not_a_directory(exc: docker.DockerError) -> bool:
+    return "not a directory" in exc.message
 
 
 async def read_json(request: Request, model: type[BaseModel], media_types: tuple[str, ...]) -> BaseModel:
@@ -104,23 +126,35 @@ def provision(sandbox_id: str) -> None:
     except docker.DockerError:
         sb.update(status="failed")
 
+# Pour JSON Schema, 600.0 est un entier : le mode strict de Pydantic le refuserait.
+JsonInt = Annotated[int, BeforeValidator(lambda v: int(v) if isinstance(v, float) and v.is_integer() else v)]
+
+
 class Limits(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     cpus: float = Field(1, ge=0.1, le=2)
-    memory_mb: int = Field(512, ge=64, le=1024)
+    memory_mb: JsonInt = Field(512, ge=64, le=1024)
 
 
 class SandboxCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     image: Literal["python:3.12-slim", "node:22-slim", "alpine:3.20"]
-    ttl_seconds: int = Field(600, ge=60, le=3600)
+    ttl_seconds: JsonInt = Field(600, ge=60, le=3600)
     limits: Limits = Field(default_factory=Limits)
+
+
+class SandboxPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    ttl_seconds: JsonInt = Field(ge=60, le=3600)
 
 # ---------- exemple fourni ----------
 
 @app.get("/v1/sandboxes/{sandbox_id}")
-def get_sandbox(sandbox_id: str):
-    return public(get_or_404(sandbox_id))
+def get_sandbox(sandbox_id: str, actor: OperatorOrAgent):
+    sb = get_or_404(sandbox_id)
+    with LOCK:
+        rep = public(sb)
+    return JSONResponse(rep, headers={"ETag": etag(rep)})
 
 
 @app.get("/healthz")
@@ -128,21 +162,54 @@ def healthz():
     return {"status": "ok"}
 
 
+@app.get("/readyz")
+def readyz():
+    if not docker.ping():
+        raise Problem(503, "docker-unavailable", "le démon Docker ne répond pas")
+    return {"status": "ready"}
+
+
 @app.post("/v1/sandboxes")
-async def create_sandbox(request: Request):
+async def create_sandbox(request: Request, actor: Operator):
     key = request.headers.get("idempotency-key")
     if key is not None and not 1 <= len(key) <= 255:
         raise Problem(422, "validation", "Idempotency-Key : 1 à 255 caractères")
     body = await read_json(request, SandboxCreate, ("application/json",))
-    sb = {"id": new_id(), "image": body.image, "status": "pending", "ttl_seconds": body.ttl_seconds,
-          "limits": body.limits.model_dump(), "created_at": now(), "container_id": None}
-    SANDBOXES[sb["id"]] = sb
+    request_body = body.model_dump(mode="json")
+    with LOCK:
+        seen = IDEMPOTENCY.get(key) if key is not None else None
+        if seen is not None:
+            if seen["request"] != request_body:
+                raise Problem(409, "idempotency-conflict", "Idempotency-Key déjà utilisée avec un autre corps")
+            return Response(seen["body"], status_code=202, media_type="application/json",
+                            headers={"Location": seen["location"]})
+        sb = {"id": new_id(), "image": body.image, "status": "pending", "ttl_seconds": body.ttl_seconds,
+              "limits": body.limits.model_dump(), "created_at": now(), "container_id": None}
+        SANDBOXES[sb["id"]] = sb
+        location = f"/v1/sandboxes/{sb['id']}"
+        response = JSONResponse(public(sb), status_code=202, headers={"Location": location})
+        if key is not None:
+            IDEMPOTENCY[key] = {"request": request_body, "body": response.body, "location": location,
+                                "sandbox_id": sb["id"]}
     threading.Thread(target=provision, args=(sb["id"],), daemon=True).start()
-    return JSONResponse(public(sb), status_code=202, headers={"Location": f"/v1/sandboxes/{sb['id']}"})
+    return response
+
+
+@app.patch("/v1/sandboxes/{sandbox_id}")
+async def update_sandbox(sandbox_id: str, request: Request, actor: Operator):
+    get_or_404(sandbox_id)
+    patch = await read_json(request, SandboxPatch, ("application/merge-patch+json",))
+    with LOCK:
+        sb = get_or_404(sandbox_id)
+        if not if_match_ok(request.headers.get("if-match"), etag(public(sb))):
+            raise Problem(412, "precondition-failed", "If-Match ne correspond plus à la version courante")
+        sb["ttl_seconds"] = patch.ttl_seconds
+        rep = public(sb)
+    return JSONResponse(rep, headers={"ETag": etag(rep)})
 
 
 @app.get("/v1/sandboxes")
-def list_sandboxes(status: Literal["pending", "ready", "failed", "terminated"] | None = None,
+def list_sandboxes(actor: Operator, status: Literal["pending", "ready", "failed", "terminated"] | None = None,
                    page_size: int = Query(20, ge=1, le=100), page_token: str = "0"):
     if not re.fullmatch(r"[0-9]{1,9}", page_token):
         raise Problem(422, "validation", f"page_token : jeton inconnu ({page_token!r})")
@@ -154,22 +221,22 @@ def list_sandboxes(status: Literal["pending", "ready", "failed", "terminated"] |
 
 
 @app.delete("/v1/sandboxes/{sandbox_id}", status_code=204)
-def delete_sandbox(sandbox_id: str):
+def delete_sandbox(sandbox_id: str, actor: Operator):
     sb = get_or_404(sandbox_id)
     if sb["container_id"]:
         docker.remove_container(sb["container_id"])
-    del SANDBOXES[sandbox_id]
+    with LOCK:
+        SANDBOXES.pop(sandbox_id, None)
+        for k in [k for k, v in IDEMPOTENCY.items() if v["sandbox_id"] == sandbox_id]:
+            del IDEMPOTENCY[k]
 
-    
-# ---------- à vous ----------
-# Une sandbox en mémoire est un dict :
-#   {"id", "image", "status", "ttl_seconds", "limits": {"cpus", "memory_mb"},
-#    "created_at", "container_id"}
-#
-# TODO createSandbox   POST   /v1/sandboxes                     -> 202 + Location
-# TODO listSandboxes   GET    /v1/sandboxes                     -> 200, paginé
-# TODO deleteSandbox   DELETE /v1/sandboxes/{sandbox_id}        -> 204
-# Bonus updateSandbox  PATCH  /v1/sandboxes/{sandbox_id}        -> ETag et If-Match
+
+@app.post("/v1/sandboxes/{sandbox_id}/tokens", status_code=201)
+def create_token(sandbox_id: str, actor: Operator):
+    get_or_404(sandbox_id)
+    token, expires_at = issue_token(sandbox_id)
+    return {"token": token, "expires_at": iso(expires_at)}
+
 
 MAX_FILE_SIZE = 1024 * 1024  # 1 Mio
 
@@ -181,9 +248,10 @@ class ExecRequest(BaseModel):
 
 
 @app.post("/v1/sandboxes/{sandbox_id}/exec")
-async def exec_command(sandbox_id: str, request: Request):
+async def exec_command(sandbox_id: str, request: Request, actor: OperatorOrAgent):
     sb = get_ready_or_409(sandbox_id)
     body = await read_json(request, ExecRequest, ("application/json",))
+    request.state.cmd = body.cmd
     if "" in body.cmd:
         raise Problem(422, "validation", "cmd : les éléments ne peuvent pas être vides")
     # exec_command bloque jusqu'à la fin de la commande : on le lance dans un thread
@@ -191,17 +259,22 @@ async def exec_command(sandbox_id: str, request: Request):
 
 
 @app.get("/v1/sandboxes/{sandbox_id}/files")
-def read_file(sandbox_id: str, path: str):
+def read_file(sandbox_id: str, path: str, actor: OperatorOrAgent):
     sb = get_ready_or_409(sandbox_id)
     check_path(path)
-    data = docker.read_file(sb["container_id"], path)
+    try:
+        data = docker.read_file(sb["container_id"], path)
+    except docker.DockerError as exc:
+        if not not_a_directory(exc):
+            raise
+        data = None
     if data is None:
         raise Problem(404, "file-not-found", f"{path} n'existe pas")
     return Response(data, media_type="application/octet-stream")
 
 
 @app.put("/v1/sandboxes/{sandbox_id}/files")
-async def write_file(sandbox_id: str, path: str, request: Request):
+async def write_file(sandbox_id: str, path: str, request: Request, actor: OperatorOrAgent):
     sb = get_ready_or_409(sandbox_id)
     check_path(path)
     ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -210,5 +283,10 @@ async def write_file(sandbox_id: str, path: str, request: Request):
     data = await request.body()
     if len(data) > MAX_FILE_SIZE:
         raise Problem(413, "payload-too-large", "1 Mio au plus")
-    created = await asyncio.to_thread(docker.write_file, sb["container_id"], path, data)
+    try:
+        created = await asyncio.to_thread(docker.write_file, sb["container_id"], path, data)
+    except docker.DockerError as exc:
+        if not not_a_directory(exc):
+            raise
+        raise Problem(422, "validation", f"path : un élément de {path!r} est un fichier, pas un dossier")
     return Response(status_code=201 if created else 204)

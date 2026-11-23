@@ -3,8 +3,9 @@ SPEC          ?= openapi.yaml
 PORT          ?= 8000
 DOCKER_SOCKET ?= /var/run/docker.sock
 VENV          ?= .venv
+export SANDBOXD_API_KEY ?= dev-key
 
-.PHONY: help lint mock docs install run test-contract flaky clean
+.PHONY: help lint mock docs install run test-contract test-auth flaky clean
 
 help:
 	@echo "make lint           vérifier le contrat (Spectral)"
@@ -13,6 +14,7 @@ help:
 	@echo "make install        installer les dépendances Python"
 	@echo "make run            lancer sandboxd (port $(PORT))"
 	@echo "make test-contract  rejouer le contrat contre sandboxd (Schemathesis)"
+	@echo "make test-auth      tester l'authentification et les autorisations (pytest, sans Docker)"
 	@echo "make flaky          lancer l'API d'entraînement capricieuse (TP4, port 8001)"
 	@echo "make clean          supprimer les conteneurs créés par sandboxd"
 
@@ -36,10 +38,15 @@ run:
 # légitimes liés à l'état (jeton de page inconnu, If-Match périmé, clé réutilisée).
 test-contract:
 	$(VENV)/bin/schemathesis run $(SPEC) --url http://localhost:$(PORT) -n 20 -w 1 \
+		-H "Authorization: Bearer $(SANDBOXD_API_KEY)" \
 		--exclude-checks positive_data_acceptance
+
+test-auth:
+	$(VENV)/bin/python -m pytest -q tests/test_auth.py
 
 flaky:
 	$(VENV)/bin/uvicorn training.flaky_api:app --port 8001
 
 clean:
-	docker ps -aq --filter label=sandboxd=1 | xargs -r docker rm -f
+	docker ps -aq --filter label=sandboxd=1 | xargs -r docker rm -fv
+	docker volume ls -q --filter label=sandboxd=1 | xargs -r docker volume rm

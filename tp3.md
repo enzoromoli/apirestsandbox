@@ -568,3 +568,43 @@ Modifications :
 - app/main.py : list_sandboxes valide status (enum), page_size (1 à 100) et page_token (entier positif), et répond 422 au lieu de 500.
 
 Vérifié à la main : page_token=abc, page_size=0, status=foo, une image hors liste et ttl_seconds:"600" donnent maintenant tous 422, et un 404 renvoie bien /problems/not-found.
+## Après corrections
+
+Sortie finale de `make test-contract` (serveur lancé sans `--reload`), résumée :
+
+```
+ ✅  Examples    ✅  8 passed  ⏭   2 skipped
+ ✅  Coverage    ✅ 10 passed
+ ✅  Fuzzing     ✅ 10 passed
+ ✅  Stateful    ✅ 26 passed   (26 scénarios, 16/22 liens couverts)
+
+Warnings:
+  ⚠️ Schema validation mismatch: 1 operation mostly rejected generated data
+     (PATCH /v1/sandboxes/{sandbox_id})
+
+Test cases:
+  586 generated, 586 passed
+============================== 1 warning in 9.62s ==============================
+```
+
+0 échec, 10 opérations testées sur 10, et le même résultat sur trois relances. `make lint` : aucune erreur.
+
+Modifications :
+- app/main.py : updateSandbox (PATCH) en merge-patch : 415, 400, 422, puis 412 si If-Match ne correspond plus. GET et PATCH renvoient un ETag (empreinte de la sandbox).
+- app/main.py : createSandbox gère Idempotency-Key : même clé et même corps donnent la même réponse sans nouvelle sandbox, autre corps donne 409. La clé est libérée au DELETE.
+- app/main.py : GET /readyz répond 200 si Docker répond, sinon 503.
+- app/main.py : un élément de chemin de plus de 255 octets donne 422, et « a/b » quand « a » est un fichier donne 404 en lecture et 422 en écriture (avant : 500).
+- app/main.py : 600.0 est accepté comme entier, comme le permet le contrat.
+- app/main.py : deleteSandbox ne renvoie plus de 500 sur deux DELETE simultanés.
+- openapi.yaml : /readyz, la réponse 503 et /problems/docker-unavailable ; limite de 255 octets sur path ; descriptions de createSandbox et writeFile précisées.
+
+Décisions code ou contrat :
+- ST205 (Allow sans PATCH) : corrigé dans le code, PATCH était dans le contrat.
+- ST302 (Location qui donne 404 après rejeu d'une clé dont la sandbox a été détruite) : corrigé dans le code, la clé est libérée au DELETE.
+- ST101 (500 sur les fichiers) : corrigé dans le code, et la limite de 255 octets ajoutée au contrat.
+- L'avertissement « Schema validation mismatch » sur PATCH est conservé : il vient des If-Match aléatoires de Schemathesis, qui reçoivent un 412 légitime.
+
+Vérifié à la main avec curl :
+- PATCH avec le bon If-Match : 200 et nouvel ETag. If-Match périmé : 412. Content-Type application/json : 415.
+- Rejeu d'Idempotency-Key : même 202, même corps, même Location, une seule sandbox dans la liste. Même clé avec un autre corps : 409.
+- /readyz : 200, et 503 problem+json avec un socket Docker absent (seconde instance sur le port 8001).
