@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 import httpx
 
 API = os.environ.get("SANDBOXD_URL", "http://localhost:8000")
+API_KEY = os.environ.get("SANDBOXD_API_KEY", "dev-key")
 
 TIMEOUT = httpx.Timeout(3.0, connect=2.0)         # une réponse lente (plus de 3 s) est abandonnée puis rejouée
 DELETE_TIMEOUT = httpx.Timeout(15.0, connect=2.0)  # docker rm -f peut prendre quelques secondes
@@ -244,7 +245,7 @@ def main() -> int:
         args.cmd = args.cmd[1:]
     VERBOSE = args.verbose
     t0 = time.monotonic()
-    with httpx.Client(base_url=API, timeout=TIMEOUT) as client:  # un seul client : connexions réutilisées
+    with httpx.Client(base_url=API, timeout=TIMEOUT, headers={"Authorization": f"Bearer {API_KEY}"}) as client:  # un seul client : connexions réutilisées
         try:
             return args.func(client, args) or 0
         except ApiError as exc:
