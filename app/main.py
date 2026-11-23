@@ -21,7 +21,7 @@ from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
-from . import audit, docker, webhooks
+from . import audit, docker, observability, webhooks
 from .auth import Operator, OperatorOrAgent, issue_token
 from .errors import Problem, install
 
@@ -39,6 +39,13 @@ SANDBOXES: dict[str, dict] = {}  # id -> sandbox (en mémoire : perdue au redém
 IDEMPOTENCY: dict[str, dict] = {}  # Idempotency-Key -> corps de la requête et réponse envoyée
 LOCK = threading.Lock()
 MAX_ACTIVE = int(os.environ.get("SANDBOXD_MAX_SANDBOXES", "20"))
+
+
+def count_active() -> int:
+    return sum(1 for sb in list(SANDBOXES.values()) if sb["status"] in ("pending", "ready"))
+
+
+observability.install(app, count_active)
 
 
 def now() -> datetime:
@@ -212,7 +219,7 @@ async def create_sandbox(request: Request, actor: Operator):
                 raise Problem(409, "idempotency-conflict", "Idempotency-Key déjà utilisée avec un autre corps")
             return Response(seen["body"], status_code=202, media_type="application/json",
                             headers={"Location": seen["location"]})
-        if sum(1 for x in SANDBOXES.values() if x["status"] in ("pending", "ready")) >= MAX_ACTIVE:
+        if count_active() >= MAX_ACTIVE:
             raise Problem(429, "quota-exceeded", f"{MAX_ACTIVE} sandboxes actives au plus")
         sb = {"id": new_id(), "image": body.image, "status": "pending", "ttl_seconds": body.ttl_seconds,
               "limits": body.limits.model_dump(), "created_at": now(), "container_id": None}

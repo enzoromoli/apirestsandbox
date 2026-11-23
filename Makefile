@@ -33,7 +33,7 @@ install:
 	$(VENV)/bin/pip install -q -r requirements.txt
 
 run:
-	DOCKER_SOCKET=$(DOCKER_SOCKET) $(VENV)/bin/uvicorn app.main:app --reload --port $(PORT)
+	DOCKER_SOCKET=$(DOCKER_SOCKET) $(VENV)/bin/uvicorn app.main:app --reload --no-access-log --port $(PORT)
 
 # positive_data_acceptance est exclu : il considère comme une faute les refus
 # légitimes liés à l'état (jeton de page inconnu, If-Match périmé, clé réutilisée).
