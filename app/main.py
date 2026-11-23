@@ -8,9 +8,12 @@ pour exemple. À vous d'écrire les autres routes : voir le sujet, partie 2.
 import asyncio
 import hashlib
 import json
+import os
 import re
 import secrets
 import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 
@@ -22,13 +25,20 @@ from . import audit, docker
 from .auth import Operator, OperatorOrAgent, issue_token
 from .errors import Problem, install
 
-app = FastAPI(title="sandboxd", openapi_url=None, docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(app):
+    threading.Thread(target=expire_loop, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="sandboxd", openapi_url=None, docs_url=None, redoc_url=None, lifespan=lifespan)
 install(app)
 audit.install(app)
 
 SANDBOXES: dict[str, dict] = {}  # id -> sandbox (en mémoire : perdue au redémarrage)
 IDEMPOTENCY: dict[str, dict] = {}  # Idempotency-Key -> corps de la requête et réponse envoyée
 LOCK = threading.Lock()
+MAX_ACTIVE = int(os.environ.get("SANDBOXD_MAX_SANDBOXES", "20"))
 
 
 def now() -> datetime:
@@ -43,12 +53,15 @@ def new_id() -> str:
     return "sbx-" + secrets.token_hex(4)
 
 
+def expires_at(sb: dict) -> datetime:
+    return sb["created_at"] + timedelta(seconds=sb["ttl_seconds"])
+
+
 def public(sb: dict) -> dict:
     """La représentation JSON d'une sandbox, conforme au schéma Sandbox."""
     return {
         "id": sb["id"], "image": sb["image"], "status": sb["status"], "ttl_seconds": sb["ttl_seconds"],
-        "limits": sb["limits"], "created_at": iso(sb["created_at"]),
-        "expires_at": iso(sb["created_at"] + timedelta(seconds=sb["ttl_seconds"])),
+        "limits": sb["limits"], "created_at": iso(sb["created_at"]), "expires_at": iso(expires_at(sb)),
     }
 
 
@@ -126,6 +139,19 @@ def provision(sandbox_id: str) -> None:
     except docker.DockerError:
         sb.update(status="failed")
 
+
+def expire_loop() -> None:
+    """Détruit le conteneur des sandboxes expirées, qui passent en terminated."""
+    while True:
+        time.sleep(5)
+        for sb in list(SANDBOXES.values()):
+            if sb["status"] == "ready" and now() >= expires_at(sb):
+                try:
+                    docker.remove_container(sb["container_id"])
+                except docker.DockerError:
+                    continue
+                sb.update(status="terminated", container_id=None)
+
 # Pour JSON Schema, 600.0 est un entier : le mode strict de Pydantic le refuserait.
 JsonInt = Annotated[int, BeforeValidator(lambda v: int(v) if isinstance(v, float) and v.is_integer() else v)]
 
@@ -183,6 +209,8 @@ async def create_sandbox(request: Request, actor: Operator):
                 raise Problem(409, "idempotency-conflict", "Idempotency-Key déjà utilisée avec un autre corps")
             return Response(seen["body"], status_code=202, media_type="application/json",
                             headers={"Location": seen["location"]})
+        if sum(1 for x in SANDBOXES.values() if x["status"] in ("pending", "ready")) >= MAX_ACTIVE:
+            raise Problem(429, "quota-exceeded", f"{MAX_ACTIVE} sandboxes actives au plus")
         sb = {"id": new_id(), "image": body.image, "status": "pending", "ttl_seconds": body.ttl_seconds,
               "limits": body.limits.model_dump(), "created_at": now(), "container_id": None}
         SANDBOXES[sb["id"]] = sb

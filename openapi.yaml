@@ -47,6 +47,8 @@ paths:
         de fond. Rejouer la requête avec le même Idempotency-Key et le même
         corps renvoie la réponse d'origine sans créer de sandbox ; avec un
         autre corps, 409. La clé est libérée quand sa sandbox est détruite.
+        Au-delà du quota de sandboxes actives (pending ou ready), 429. À
+        expires_at, le conteneur est détruit et la sandbox passe en terminated.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -87,6 +89,8 @@ paths:
           $ref: "#/components/responses/UnsupportedMediaType"
         "422":
           $ref: "#/components/responses/UnprocessableContent"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
     get:
       tags: [sandboxes]
       operationId: listSandboxes
@@ -588,7 +592,7 @@ components:
         type:
           type: string
           format: uri-reference
-          enum: [/problems/not-found, /problems/file-not-found, /problems/not-ready, /problems/idempotency-conflict, /problems/invalid-json, /problems/validation, /problems/precondition-failed, /problems/unsupported-media-type, /problems/payload-too-large, /problems/method-not-allowed, /problems/docker-unavailable, /problems/unauthorized, /problems/forbidden]
+          enum: [/problems/not-found, /problems/file-not-found, /problems/not-ready, /problems/idempotency-conflict, /problems/invalid-json, /problems/validation, /problems/precondition-failed, /problems/unsupported-media-type, /problems/payload-too-large, /problems/method-not-allowed, /problems/docker-unavailable, /problems/quota-exceeded, /problems/unauthorized, /problems/forbidden]
           example: /problems/not-found
         title:
           type: string
@@ -661,6 +665,11 @@ components:
           schema: {$ref: "#/components/schemas/Problem"}
     ServiceUnavailable:
       description: Le démon Docker ne répond pas.
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    TooManyRequests:
+      description: Quota de sandboxes actives atteint.
       content:
         application/problem+json:
           schema: {$ref: "#/components/schemas/Problem"}
